@@ -1,3 +1,5 @@
+package questDependence
+
 import de.fabmax.kool.KoolApplication           // KoolApplication - запускает Kool-приложение (окно + цикл рендера)
 import de.fabmax.kool.addScene                  // addScene - функция "добавь сцену" в приложение (у тебя она просила отдельный импорт)
 import de.fabmax.kool.math.Vec3f                // Vec3f - 3D-вектор (x, y, z), как координаты / направление
@@ -66,7 +68,7 @@ data class QuestStateOnServer(
     val branch: QuestBranch,
     val progressCurrent: Int,
     val progressTarget: Int,
-    val isNew: Boolean
+    val isNew: Boolean,
     val isPinned: Boolean,
     val unlockRequiredQuestId: String? = null,
 )
@@ -102,7 +104,7 @@ data class ItemCollected(
 ): GameEvent
 
 data class GoldTurnedIn(
-    override playerId: String,
+    override val playerId: String,
     val questId: String,
     val amount: Int
 ): GameEvent
@@ -136,7 +138,10 @@ data class QuestProggressed(
     override val playerId: String,
     val questId: String
 ): GameEvent
-
+data class ServerMessage(
+    override val playerId: String,
+    val text: String,
+): GameEvent
 // ------------- Команды UI -> Сервер
 
 sealed interface GameCommand{
@@ -156,7 +161,7 @@ data class CmdCollectItem(
 ): GameCommand
 
 data class CmdGiveGoldDebug(
-    override playerId: String,
+    override val playerId: String,
     val amount: Int
 ): GameCommand
 
@@ -165,22 +170,27 @@ data class CmdFinishQuest(
     val questId: String
 ): GameCommand
 
-data class QuestJournalUpdated(
+data class CmdQuestJournalUpdated(
     override val playerId: String
 ): GameCommand
 
 // Игрок открыл квест - поменять маркер NEW
-data class QuestOpened(
+data class CmdQuestOpened(
     override val playerId: String,
     val questId: String
 ): GameCommand
 
-data class QuestPinned(
+data class CmdTurnInGold(
+    override val playerId: String,
+    val amount: Int,
+    val questId: String
+): GameCommand
+data class CmdQuestPinned(
     override val playerId: String,
     val questId: String
 ): GameCommand
 
-data class QuestProggressed(
+data class CmdQuestProggressed(
     override val playerId: String,
     val questId: String
 ): GameCommand
@@ -244,16 +254,33 @@ class QuestSystem {
                 else -> "квест завершён"
             }
         }
-
-        return when (questId) {
-            "q_alchemist" -> when (step) {
+        /////////////////////////////////
+        if (q.questId == "q_barabulka"){
+            return when(q.step){
+                0 -> "найди барабульку"
+                1 -> "подкупи барабульку"
+                2 -> "скажи привет`"
+                else -> "квест завершён"
+            }
+        }
+        if (q.questId == "q_dbdPlay"){
+            return when(q.step){
+                0 -> "поиграть в дэбэдэ"
+                1 -> "сыграть дбд"
+                2 -> "play to debede`"
+                else -> "квест завёршён"
+            }
+        }
+        /////////////////////////////////
+        return when (q.questId) {
+            "q_alchemist" -> when (q.step) {
                 0 -> "Поговорить с алхимиком"
                 1 -> "Собери траву"
                 2 -> "Принеси траву"
                 else -> "Квест завершён"
             }
 
-            "q_guard" -> when (step) {
+            "q_guard" -> when (q.step) {
                 0 -> "поговорить стражем этой двери"
                 1 -> "Заплатить 10 золота"
                 else -> "Проход открыт"
@@ -398,7 +425,8 @@ class QuestSystem {
         }
 
         if (q.step == 1 && q.branch == QuestBranch.HELP && event is ItemCollected && event.itemId == "Herb"){
-            val newCurrent = (q.progressCurrent + event.countAdded).coerceAtMost(q.progressCurrent)
+            val newCurrent = (q.progressCurrent + event.countAdded).coerceAtMost(q.progressTarget)
+
             val update = q.copy(progressCurrent = newCurrent, isNew = false)
 
             if(newCurrent >= q.progressTarget){
@@ -415,5 +443,324 @@ class QuestSystem {
             }
             return update
         }
+        return q
+    }
+    fun updateGuard(q: QuestStateOnServer, event: GameEvent): QuestStateOnServer{
+        val base = if (q.step == 0){
+            q.copy(step = 1, progressCurrent = 0, progressTarget = 5, isNew = false)
+        }else q
+
+        if (base.step == 1 && event is GoldTurnedIn && event.questId == base.questId){
+            val newCurrent = (base.progressCurrent + event.amount).coerceAtMost(base.progressCurrent)
+            val updated = base.copy(progressCurrent = newCurrent, isNew = false)
+
+            if (newCurrent >= q.progressTarget){
+                return updated.copy(step = 2, progressCurrent = 0, progressTarget = 0)
+            }
+            return updated
+        }
+        return base
     }
 }
+class GameServer{
+    private  val _events = MutableSharedFlow<GameEvent>(extraBufferCapacity = 64)
+    val events: SharedFlow<GameEvent> = _events.asSharedFlow()
+
+    private val _command = MutableSharedFlow<GameCommand>(extraBufferCapacity = 64)
+    val commands: SharedFlow<GameCommand> = _command.asSharedFlow()
+
+    fun trySend(cmd: GameCommand): Boolean = _command.tryEmit(cmd)
+
+    private val _players = MutableStateFlow(
+        mapOf(
+            "Oleg" to PlayerData("Oleg", 0 , emptyMap()),
+            "Stas" to PlayerData("Stas", 0 , emptyMap())
+        )
+    )
+    val players: StateFlow<Map<String, PlayerData>> = _players.asStateFlow()
+
+    private val _questByPlayer = MutableStateFlow(
+        mapOf(
+            "Oleg" to initialQuestList(),
+            "Stas" to initialQuestList()
+        )
+    )
+    val questsByPlayer: StateFlow<Map<String, List<QuestStateOnServer>>> = _questByPlayer.asStateFlow()
+
+    fun start(scope: kotlinx.coroutines.CoroutineScope, questSystem: QuestSystem){
+        scope.launch {
+            commands.collect{cmd ->
+                processCommand(cmd, questSystem)
+            }
+        }
+    }
+    private fun setPlayerData(playerId: String, data: PlayerData){
+        val map = _players.value.toMutableMap()
+        map[playerId] = data
+        _players.value = map.toMap()
+    }
+    private fun getPlayerData(playerId: String): PlayerData {
+        return _players.value[playerId] ?: PlayerData(playerId, 0, emptyMap())
+    }
+    private fun setQuests(playerId: String, quests: List<QuestStateOnServer>){
+        val map = _questByPlayer.value.toMutableMap()
+        map[playerId] = quests
+        _questByPlayer.value = map.toMap()
+    }
+    private fun getQuests(playerId: String):List<QuestStateOnServer>{
+        return _questByPlayer.value[playerId] ?: emptyList()
+    }
+    private suspend fun processCommand(cmd: GameCommand, questSystem: QuestSystem){
+        when(cmd){
+            is CmdOpenQuest -> {
+                val list = getQuests(cmd.playerId).toMutableList()
+
+                for(i in list.indices){
+                    if (list[i].questId == cmd.questId){
+                        list[i] = list[i].copy(isNew = true)
+                    }
+                }
+                setQuests(cmd.playerId, list)
+                _events.emit(QuestJournalUpdated(cmd.playerId))
+            }
+            is CmdPinQuest -> {
+                val list = getQuests(cmd.playerId).toMutableList()
+
+                for(i in list.indices){
+                    if (list[i].questId == cmd.questId){
+                        list[i] = list[i].copy(isNew = true)
+                    }
+                }
+                setQuests(cmd.playerId, list)
+                _events.emit(QuestJournalUpdated(cmd.playerId))
+            }
+            is CmdChooseBranch -> {
+                val quests = getQuests(cmd.playerId)
+                val target = quests.find { it.questId == cmd.questId }
+
+                if (target == null){
+                    _events.emit(ServerMessage(cmd.playerId, "Квест ${cmd.questId} не найден"))
+                    return
+                }
+                if (target.status != QuestStatus.ACTIVE){
+                    _events.emit(ServerMessage(cmd.playerId, "Квест ${cmd.questId} сейчас не активен"))
+                }
+                val ev = QuestBranchChosen(cmd.playerId, cmd.questId, cmd.branch)
+                _events.emit(ev)
+
+                val updated = QuestSystem.applyEvent(questSystem, ev)
+                setQuests(cmd.playerId, updated)
+
+                _events.emit(QuestJournalUpdated(cmd.playerId))
+            }
+            is CmdGiveGoldDebug -> {
+                val player = getPlayerData(cmd.playerId)
+                setPlayerData(cmd.playerId, player.copy(gold = player.gold + cmd.amount))
+                _events.emit(ServerMessage(cmd.playerId, "Выдано золото +${cmd.amount}"))
+            }
+            is CmdTurnInGold ->{
+                val player = getPlayerData(cmd.playerId)
+
+                if (player.gold < cmd.amount){
+                    _events.emit(ServerMessage(cmd.playerId, "Недостаточно богат нужно ${cmd.amount}"))
+                    return
+                }
+
+                setPlayerData(cmd.playerId, player.copy(gold = player.gold - cmd.amount))
+
+                val ev = GoldTurnedIn(cmd.playerId, cmd.questId,cmd.amount)
+                _events.emit(ev)
+
+                val updated = questSystem.applyEvent(getQuests(cmd.playerId), ev)
+                setQuests(cmd.playerId, updated)
+
+                _events.emit(QuestJournalUpdated(cmd.playerId))
+            }
+            is CmdFinishQuest -> {
+                finishQuest(cmd.playerId, cmd.questId)
+            }
+            else -> {}
+        }
+    }
+    private suspend fun finishQuest(playerId: String, questId: String) {
+        val list = getQuests(playerId).toMutableList()
+
+        val index = list.indexOfFirst{it.questId == questId}
+
+        if (index == -1){
+            _events.emit(ServerMessage(playerId, "Квест $questId не найден"))
+            return
+        }
+        val q = list[index]
+
+        if (q.status != QuestStatus.ACTIVE){
+            _events.emit(ServerMessage(playerId, "Нельзя совершить $questId статус: ${q.status}"))
+            return
+        }
+        if (q.step != 2){
+            _events.emit(ServerMessage(playerId, "Нельзя совершить $questId начала дойди до этапа 2"))
+            return
+        }
+        list[index] =q.copy(
+            status = QuestStatus.COMPLETED,
+            step = 3,
+            isNew = false
+        )
+        setQuests(playerId, list)
+        _events.emit(QuestCompleted(playerId, questId))
+
+
+        unlockDependentQuests(playerId, questId)
+
+        _events.emit(QuestJournalUpdated(playerId))
+    }
+
+    private suspend fun unlockDependentQuests(playerId: String, completedQuestId: String){
+        val list = getQuests(playerId).toMutableList()
+        var changed = false
+
+        for (i in list.indices){
+            val q = list[i]
+
+            if(q.status == QuestStatus.LOCKED && q.unlockRequiredQuestId == completedQuestId){
+                list[i] = q.copy(
+                    status = QuestStatus.ACTIVE,
+                    isNew = true
+                )
+                changed = true
+
+                _events.emit(QuestUnlocked(playerId, q.questId))
+            }
+        }
+        if (changed){
+            setQuests(playerId, list)
+        }
+    }
+}
+
+fun initialQuestList(): List<QuestStateOnServer> {
+    return listOf(
+        QuestStateOnServer(
+            "q_alchemist",
+            "Помочь Алхимику",
+            QuestStatus.ACTIVE,
+            0,
+            QuestBranch.NONE,
+            0,
+            0,
+            true,
+            false,
+            null
+        ),
+        QuestStateOnServer(
+            "q_guard",
+            "Подкупить стражника",
+            QuestStatus.LOCKED,
+            0,
+            QuestBranch.NONE,
+            0,
+            0,
+            true,
+            false,
+            "q_alchemist"
+        ),
+        /////////////////////////////////
+        QuestStateOnServer(
+            "q_barabulka",
+            "Подкупить барабульку",
+            QuestStatus.LOCKED,
+            0,
+            QuestBranch.NONE,
+            0,
+            0,
+            true,
+            false,
+            "q_guard"
+        ),
+        QuestStateOnServer(
+            "q_dbdPlay",
+            "ПОИГРАЙ В ДЭБЭДЭ",
+            QuestStatus.LOCKED,
+            0,
+            QuestBranch.NONE,
+            0,
+            0,
+            true,
+            false,
+            "q_guard"
+        )
+/////////////////////////////////
+    )
+}
+
+class HudState{
+    val activePlayerIdFlow = MutableStateFlow("Oleg")
+    val activePlayerIdUi = mutableStateOf("Oleg")
+
+    val gold = mutableStateOf(0)
+    val inventoryText = mutableStateOf("Inventory(empty)")
+
+    val questEntries = mutableStateListOf<List<QuestJournalEntry>>(emptyList())
+    val selectedQuests = MutableStateFlow<String?>(null)
+
+    val log = mutableStateOf<List<String>>(emptyList())
+}
+
+fun hudLog(hud: HudState, text: String){
+    hud.log.value = (hud.log.value + text).takeLast(25)
+}
+
+fun markerSymbol(marker: QuestMarker): String{
+    return when(marker){
+        QuestMarker.NEW -> "🆕"
+        QuestMarker.PINNED -> "📌"
+        QuestMarker.COMPLETED -> "👌"
+        QuestMarker.LOCKED -> "🔐"
+        QuestMarker.NONE -> "🧀"
+    }
+}
+
+fun journalSortRank(entry: QuestJournalEntry): Int{
+    return when{
+        entry.marker == QuestMarker.PINNED -> 0
+        entry.marker == QuestMarker.NEW -> 1
+        entry.status == QuestStatus.ACTIVE -> 2
+        entry.status == QuestStatus.LOCKED -> 3
+        entry.status == QuestStatus.COMPLETED -> 4
+        else -> 5
+
+    }
+}
+
+fun eventToText(event: GameEvent): String{
+    return when(event){
+        is QuestBranchChosen -> "QuestBranchChosen ${event.questId} - > ${event.branch}"
+        is ItemCollected -> "ItemCollected ${event.itemId} x ${event.countAdded}"
+        is GoldTurnedIn -> "GoldTurnedIn ${event.questId} - ${event.amount}"
+        is QuestCompleted -> "QuestCompleted ${event.questId}"
+        is QuestUnlocked -> "QuestUnlocked ${event.questId}"
+        is QuestJournalUpdated -> "QuestJournalUpdated ${event.playerId}"
+        is ServerMessage -> "ServerMessage ${event.text}"
+        else -> "Unknown"
+    }
+}
+/////////////////////////////////
+fun barProgress(q: QuestStateOnServer): Int{
+    val maxStep = when (q.questId){
+        "q_alchemist" -> 2
+        "q_guard" -> 2
+        "q_barabulka" -> 2
+        "q_dbdPlay" -> 2
+        else -> 1
+    }
+    return ((q.step.toFloat() / maxStep) * 100).toInt()
+}
+
+fun showBarProgress(q: QuestStateOnServer){
+    val perc = barProgress(q)
+    println("progress ${perc}%")
+}
+/////////////////////////////////
+// 1.1. c)
+// 1.2. c)
+// 1.3. d)
