@@ -151,14 +151,14 @@ fun buildAlchemistDialogue(player: PlayerState): DialogueView{
                 DialogueView(
                     "Алхимик",
                     "Мало, мне надо 4 вщто",
-                    emptyList<>()
+                    emptyList()
                 )
             }else{
                 DialogueView(
                     "Алхимик",
                     "спс",
                     listOf(
-                        DialogueOption("give_herb", "Отдать 4 травы")б
+                        DialogueOption("give_herb", "Отдать 4 травы")
                     )
                 )
             }
@@ -184,4 +184,199 @@ fun buildAlchemistDialogue(player: PlayerState): DialogueView{
             )
         }
     }
+}
+
+sealed interface GameCommand{
+    val playerId: String
+}
+data class CmdMovePlayer(
+    override val playerId: String,
+    val dx: Float,
+    val dz: Float
+): GameCommand
+
+data class CmdInteract(
+    override val playerId: String
+): GameCommand
+
+data class CmdChooseDialogueOption(
+    override val playerId: String,
+    val optionId: String
+): GameCommand
+
+data class CmdSwitchActivePlayer(
+    override val playerId: String,
+    val newPlayer: String
+): GameCommand
+
+data class CmdResetPlayer(
+    override val playerId: String
+): GameCommand
+
+sealed interface GameEvent{
+    val playerId: String
+}
+
+data class EnteredArea(
+    override val playerId: String,
+    val areaId: String
+): GameEvent
+
+data class LeftArea(
+    override val playerId: String,
+    val areaId: String
+): GameEvent
+
+data class InteractedWithNpc(
+    override val playerId: String,
+    val npcId: String
+): GameEvent
+
+data class InteractedWithHerbSource(
+    override val playerId: String,
+    val sourceId: String
+): GameEvent
+
+data class InventoryChanged(
+    override val playerId: String,
+    val itemId: String,
+    val newCount: Int
+): GameEvent
+
+data class QuestStateChanged(
+    override val playerId: String,
+    val newState: QuestState
+): GameEvent
+
+data class NpcMemoryChanged(
+    override val playerId: String,
+    val memory: NpcMemory
+): GameEvent
+
+data class ServerMessage(
+    override val playerId: String,
+    val text: String
+): GameEvent
+
+class GameServer{
+    val worldObjects = listOf(
+        WorldObjectDef(
+            "alchemist",
+            WorldObjectType.ALCHEMIST,
+            -3f,
+            0f,
+            1.7f
+        ),
+        WorldObjectDef(
+            "herb_source",
+            WorldObjectType.HERB_SOURCE,
+            3f,
+            0f,
+            1.7f
+        )
+    )
+
+    private  val _events = MutableSharedFlow<GameEvent>(extraBufferCapacity = 64)
+    val events: SharedFlow<GameEvent> = _events.asSharedFlow()
+
+    private val _command = MutableSharedFlow<GameCommand>(extraBufferCapacity = 64)
+    val commands: SharedFlow<GameCommand> = _command.asSharedFlow()
+
+    fun trySend(cmd: GameCommand): Boolean = _command.tryEmit(cmd)
+
+    private val _players = MutableStateFlow(
+        mapOf(
+            "Oleg" to initialPlayerState("Oleg"),
+            "Stas" to initialPlayerState("Stas")
+        )
+    )
+    val players: StateFlow<Map<String, PlayerState>> = _players.asStateFlow()
+
+
+    fun start(scope: kotlinx.coroutines.CoroutineScope){
+        scope.launch {
+            commands.collect{cmd ->
+                processCommand(cmd)
+            }
+        }
+    }
+    private fun setPlayerState(playerId: String, data: PlayerState){
+        val map = _players.value.toMutableMap()
+        map[playerId] = data
+        _players.value = map.toMap()
+    }
+    private fun getPlayerState(playerId: String): PlayerState {
+        return _players.value[playerId] ?: initialPlayerState(playerId)
+    }
+
+    private fun updatePlayer(playerId: String, change: (PlayerState) -> PlayerState) {
+        val oldMap = _players.value
+        val oldPlayer = oldMap[playerId] ?: return
+
+        val newPlayer = change(oldPlayer)
+
+        val newMap = oldMap.toMutableMap()
+        newMap[playerId] = newPlayer
+        _players.value = newMap.toMap()
+    }
+
+    private fun nearestObject(player: PlayerState): WorldObjectDef? {
+        val candidates = worldObjects.filter { obj ->
+            distance2d(player.posX, player.posZ, obj.x, obj.z) <= obj.interactRadius
+        }
+
+        return candidates.minByOrNull { obj ->  //> minBy = берёт ближайший объект по расстоянию до игрока | OrNull - если нет таких объектов - вернуть null
+            distance2d(player.posX, player.posZ, obj.x, obj.z) <= obj.interactRadius
+        }
+    }
+
+    private suspend fun refreshPlayerArea(playerId: String){
+        val player = getPlayerState(playerId)
+        val nearest = nearestObject(player)
+
+        val oldAreaId = player.currentAreaId
+        val newAreaId = nearest?.id
+
+        if (oldAreaId == newAreaId) {
+            val newHint =
+                when (newAreaId) {
+                    "alchemist" -> "Подойди и нажми по алхимику"
+                    "herb_source" -> "Собери траву"
+                    else -> "Подойди к одной из локаций"
+                }
+            updatePlayer(playerId) {p -> p.copy(hintText = newHint)}
+            return
+        }
+
+        if(oldAreaId != null) {
+            _events.emit(LeftArea(playerId, oldAreaId)) //> emit - "Сообщи всем подписчикам, что произошло событие LeftArea"
+        }
+
+        if (newAreaId != null) {
+            _events.emit(EnteredArea(playerId, newAreaId))
+        }
+
+        val newHint =
+            when (newAreaId) {
+                "alchemist" -> "Подойди и нажми по алхимику"
+                "herb_source" -> "Собери траву"
+                else -> "Подойди к одной из локаций"
+            }
+        updatePlayer(playerId) {p -> p.copy(hintText = newHint, currentAreaId = newAreaId)}
+    }
+
+    private suspend fun processCommand(cmd: GameCommand) {
+        when (cmd) {
+            is CmdMovePlayer -> {
+                updatePlayer(cmd.playerId) { p -> p.copy(posX = p.posX + cmd.dx, posZ = p.posZ + cmd.dz)
+                }
+                refreshPlayerArea(cmd.playerId)
+            }
+            is CmdInteract -> {
+                // ...
+            }
+
+        }
+    }
+
 }
