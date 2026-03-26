@@ -66,6 +66,7 @@ data class PlayerState(
     val alchemistMemory: NpcMemory,
     val currentAreaId: String?,
     val hintText: String, // -= Подсказка что делать и тп
+    val gold: Int
 )
 
 // -=-=-= Вспомогательные функции =-=-=-
@@ -94,7 +95,8 @@ fun initialPlayerState(playerId: String): PlayerState {
                 false
             ),
             null,
-            "Подойди к одной из локаций"
+            "Подойди к одной из локаций",
+            0
         )
     }else{
         PlayerState(
@@ -109,7 +111,8 @@ fun initialPlayerState(playerId: String): PlayerState {
                 false
             ),
             null,
-            "Подойди к одной из локаций"
+            "Подойди к одной из локаций",
+            0
         )
     }
 }
@@ -439,8 +442,85 @@ class GameServer{
                         _events.emit(QuestStateChanged(cmd.playerId, QuestState.WAIT_HERB))
                         _events.emit(ServerMessage(cmd.playerId, "Алхимик попросил собрать 3 травы"))
                     }
+                    "give_herb" ->{
+                        if (player.questState != QuestState.WAIT_HERB){
+                            _events.emit(ServerMessage(cmd.playerId, "Сейчас нельзя сдать траву"))
+                        }
+                        
+                        val herbs = herbCount(player)
+                        
+                        if (herbs > 3){
+                            _events.emit(ServerMessage(cmd.playerId, "Недостаточно травы"))
+                            return
+                        }
+                        
+                        val newCount = herbs - 3
+                        val newInventory = if(newCount <= 0) player.inventory - "herb" else player.inventory + ("herb" to newCount)
+                        
+                        val newMemory = player.alchemistMemory.copy(
+                            receivedHerb = true
+                        )
+                        
+                        updatePlayer(cmd.playerId){ p ->
+                            p.copy(
+                                inventory = newInventory,
+                                gold = p.gold + 5,
+                                questState = QuestState.GOOD_END,
+                                alchemistMemory = newMemory
+                            )
+                        }
+                        
+                        _events.emit(InventoryChanged(cmd.playerId, "herb", newCount))
+                        _events.emit(NpcMemoryChanged(cmd.playerId, newMemory))
+                        _events.emit(QuestStateChanged(cmd.playerId, QuestState.GOOD_END))
+                        _events.emit(ServerMessage(cmd.playerId, "Алхимик получил траву и выдал тебе золото"))
+                    }
+                    else -> {
+                        _events.emit(ServerMessage(cmd.playerId,"Неизвестный формат диалога"))
+                    }
                 }
             }
+            is CmdSwitchActivePlayer -> {
+                //........................................................
+            }
+            
+            is CmdResetPlayer -> {
+                updatePlayer(cmd.playerId) {_ -> initialPlayerState(cmd.playerId)}
+                _events.emit(ServerMessage(cmd.playerId, "Игрок сброшен к начальному состоянию"))
+            }
         }
+    }
+}
+
+class HudState{
+    val activePlayerIdFlow = MutableStateFlow("Oleg")
+    val activePlayerIdUi = mutableStateOf("Oleg")
+    val playerSnapShot = mutableStateOf(initialPlayerState("Oleg"))
+    val log = mutableStateOf<List<String>>(emptyList())
+}
+
+fun hudLog(hud: HudState, line: String){
+    hud.log.value = (hud.log.value + line).takeLast(20)
+}
+
+fun formatInventory(player: PlayerState): String{
+    return if (player.inventory.isEmpty()){
+        "Inventoory: (пусто)"
+    }else{
+        "Inventory:" + player.inventory.entries.joinToString { "${it.key}: ${it.value}" }
+    }
+}
+
+fun currentObjective(player: PlayerState): String{
+    val herbs = herbCount(player)
+    
+    return when(player.questState){
+        QuestState.START -> "подойди к алхимику и начни разговор"
+        QuestState.WAIT_HERB -> {
+            if (herbs < 3) "Собери 3 травы. сейчас $herbs /3"
+            else "Вернись к алхимику и отдай 3 травы"
+        }
+        QuestState.GOOD_END -> "Квест завершён хорошо"
+        QuestState.EVIL_END -> "Квест завершён плохо"
     }
 }
