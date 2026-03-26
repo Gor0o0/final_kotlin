@@ -373,10 +373,74 @@ class GameServer{
                 refreshPlayerArea(cmd.playerId)
             }
             is CmdInteract -> {
-                // ...
-            }
+                val player = getPlayerState(cmd.playerId) //!
+                val obj = nearestObject(player)
 
+                if (obj == null){
+                    _events.emit(ServerMessage(cmd.playerId, "Рядом нет объектов для взаимодейсвия"))
+                    return
+                }
+
+                when (obj.type){
+                    WorldObjectType.ALCHEMIST -> {
+                        val oldMemory = player.alchemistMemory
+                        val newMemory = oldMemory.copy(
+                            hasMet = true,
+                            timesTalked = oldMemory.timesTalked + 1
+                        )
+
+                        updatePlayer(cmd.playerId) {p ->
+                            p.copy(alchemistMemory = newMemory)
+                        }
+
+                        _events.emit(InteractedWithNpc(cmd.playerId, obj.id))
+                        _events.emit(NpcMemoryChanged(cmd.playerId, newMemory))
+                    }
+
+                    WorldObjectType.HERB_SOURCE -> {
+                        if (player.questState != QuestState.WAIT_HERB){
+                            _events.emit(ServerMessage(cmd.playerId, "Трава тебе не надо щас, сначала квест"))
+                            return
+                        }
+
+                        val oldCount = herbCount(player)
+                        val newCount = oldCount + 1
+                        val newInventory = player.inventory + ("herb" to newCount)
+
+                        updatePlayer(cmd.playerId){ p->
+                            p.copy(inventory = newInventory)
+                        }
+
+                        _events.emit(InteractedWithHerbSource(cmd.playerId, obj.id))
+                        _events.emit(InventoryChanged(cmd.playerId, "herb", newCount))
+
+                    }
+                }
+            }
+            is CmdChooseDialogueOption -> {
+                val player = getPlayerState(cmd.playerId)
+
+                if (player.currentAreaId != "alchemist"){
+                    _events.emit(ServerMessage(cmd.playerId, "Сначала подойди к алхимику"))
+                    return
+                }
+
+                when(cmd.optionId){
+                    "accept_help" -> {
+                        if(player.questState != QuestState.START){
+                            _events.emit(ServerMessage(cmd.playerId, "Путь помощи можно выбрать ток в начале квеста"))
+                            return
+                        }
+
+                        updatePlayer(cmd.playerId){ p ->
+                            p.copy(questState = QuestState.WAIT_HERB)
+                        }
+
+                        _events.emit(QuestStateChanged(cmd.playerId, QuestState.WAIT_HERB))
+                        _events.emit(ServerMessage(cmd.playerId, "Алхимик попросил собрать 3 травы"))
+                    }
+                }
+            }
         }
     }
-
 }
