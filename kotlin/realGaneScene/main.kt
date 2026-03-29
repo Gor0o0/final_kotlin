@@ -304,13 +304,49 @@ class GameServer{
     val players: StateFlow<Map<String, PlayerState>> = _players.asStateFlow()
 
 
-    fun start(scope: kotlinx.coroutines.CoroutineScope){
+    fun start(scope: CoroutineScope) {
         scope.launch {
-            commands.collect{cmd ->
+            commands.collect { cmd ->
                 processCommand(cmd)
             }
         }
+        scope.launch {
+            while (true) {
+                delay(1000L)
+
+                updatePlayer("Oleg") { p ->
+                    val mem = p.alchemistMemory
+                    if (mem.isStopped) return@updatePlayer p
+
+                    val newX = mem.posX + (-0.2f..0.2f).random()
+                    val newZ = mem.posZ + (-0.2f..0.2f).random()
+
+                    p.copy(
+                        alchemistMemory = mem.copy(
+                            posX = newX,
+                            posZ = newZ
+                        )
+                    )
+                }
+
+                updatePlayer("Stas") { p ->
+                    val mem = p.alchemistMemory
+                    if (mem.isStopped) return@updatePlayer p
+
+                    val newX = mem.posX + (-0.2f..0.2f).random()
+                    val newZ = mem.posZ + (-0.2f..0.2f).random()
+
+                    p.copy(
+                        alchemistMemory = mem.copy(
+                            posX = newX,
+                            posZ = newZ
+                        )
+                    )
+                }
+            }
+        }
     }
+
     private fun setPlayerState(playerId: String, data: PlayerState){
         val map = _players.value.toMutableMap()
         map[playerId] = data
@@ -358,6 +394,13 @@ class GameServer{
                 }
             updatePlayer(playerId) {p -> p.copy(hintText = newHint)}
             return
+        }
+
+        if (oldAreaId == "alchemist" && newAreaId != "alchemist") {
+            updatePlayer(playerId) { p ->
+                val mem = p.alchemistMemory
+                p.copy(alchemistMemory = mem.copy(isStopped = false))
+            }
         }
 
         if(oldAreaId != null) {
@@ -414,7 +457,8 @@ class GameServer{
                         val oldMemory = player.alchemistMemory
                         val newMemory = oldMemory.copy(
                             hasMet = true,
-                            timesTalked = oldMemory.timesTalked + 1
+                            timesTalked = oldMemory.timesTalked + 1,
+                            isStopped = true
                         )
 
                         if(herb < 3 && newMemory.sawPlayerNearSource){
@@ -675,9 +719,16 @@ fun main() = KoolApplication {
             lastRenderedZ = player.posZ
         }
 
-        alchemistNode.onUpdate{
+        alchemistNode.onUpdate {
+            val activeId = hud.activePlayerIdFlow.value
+            val player = server.getPlayerState(activeId)
+            val mem = player.alchemistMemory
+
+            transform.setIdentity()
+            transform.translate(mem.posX, 0f, mem.posZ)
             transform.rotate(20f.deg * Time.deltaT, Vec3f.Y_AXIS)
         }
+
         herbNode.onUpdate{
             transform.rotate(20f.deg * Time.deltaT, Vec3f.Y_AXIS)
         }
