@@ -114,6 +114,11 @@ data class CmdSwitchPlayer(
     val questId: String
 ): GameCommand
 
+ data class CmdAddQuest(
+     override val playerId: String,
+     val questId: String
+ )
+
 // ------------ Серверные данные квеста
 
 data class QuestStateOnServer(
@@ -202,7 +207,6 @@ class GameServer{
         return _commands.tryEmit(cmd)
     }
 
-
     // состояние квестов для каждого игрока
 
     private val _questByPlayer = MutableStateFlow<Map<String, List<QuestStateOnServer>>>(
@@ -232,9 +236,32 @@ class GameServer{
             is CmdOpenQuest -> openQuest(cmd.playerId, cmd.questId)
             is CmdProgressQuest -> progressQuest(cmd.playerId, cmd.questId)
             is CmdPinQuest -> pinQuest(cmd.playerId, cmd.questId)
+            is CmdAddQuest -> addQuest(cmd.playerId, cmd.questId)
             is CmdSwitchPlayer -> {}
         }
     }
+
+    private suspend fun addQuest(playerId: String, questId: String) {
+        val quests = getPlayerQuests(playerId).toMutableList()
+        val title = "новинка: $questId"
+        val alreadyHas = quests.any { it.questId == questId }
+
+        if (!alreadyHas) {
+            val newQuest = QuestStateOnServer(
+                questId = questId,
+                title = title,
+                step = 0,
+                status = QuestStatus.ACTIVE,
+                isNew = true,
+                isPinned = false
+            )
+            quests += newQuest
+            setPlayerQuests(playerId, quests)
+
+            _events.emit(QuestJournalUpdated(playerId))
+        }
+    }
+
 
     private fun getPlayerQuests(playerId: String) : List<QuestStateOnServer>{
         return _questByPlayer.value[playerId] ?: emptyList()
@@ -472,7 +499,7 @@ fun main() = KoolApplication {
                          }
                  }
 
-                 Button("Атаковать Артемия (даму полусвета)") {
+                 Button("Атаковать") {
                      modifier.margin(bottom = 8.dp)
                          .onClick {
                              val server = Shared.server ?: return@onClick
@@ -481,7 +508,7 @@ fun main() = KoolApplication {
 
                              val cooldowns = Shared.cooldowns
                              if (cooldowns != null && !cooldowns.canAttack(playerId)) {
-                                 val rejectEvent = CommandRejected(playerId, "Атака еще на перезарядке! Осталось ${hud.attackCooldownMsLeft.use()} мс")
+                                 val rejectEvent = CommandRejected(playerId, "Атака еще на кд! Осталось ${hud.attackCooldownMsLeft.use()} мс")
                                  if (!server.tryPublish(rejectEvent)) {
                                      coroutineScope.launch { server.publish(rejectEvent) }
                                  }
@@ -520,6 +547,17 @@ fun main() = KoolApplication {
                          }
                  }
 
+                 Button("добавить квест (q_alchemist)") {
+                     modifier.margin(bottom = 8.dp)
+                         .onClick {
+                             val server = Shared.server ?: return@onClick
+                             val playerId = hud.activePlayerId.value
+                             val cmd = CmdAddQuest(playerId, "q_alchemist")
+                             if (!server.trySend(cmd)) {
+                                 coroutineScope.launch { server.trySend(cmd) }
+                             }
+                         }
+                 }
                  Row {
                      modifier.margin(bottom = 8.dp)
                      Button("Поговорить с алхимиком") {
