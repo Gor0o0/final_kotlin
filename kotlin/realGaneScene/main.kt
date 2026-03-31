@@ -263,7 +263,7 @@ data class ServerMessage(
 ): GameEvent
 
 class GameServer{
-    val worldObjects = listOf(
+    val worldObjects = mutableListOf(
         WorldObjectDef(
             "alchemist",
             WorldObjectType.ALCHEMIST,
@@ -277,14 +277,26 @@ class GameServer{
             3f,
             0f,
             1.7f
-        ),
-        WorldObjectDef(
-            "chest",
-            WorldObjectType.CHEST,
-            1f,
-            0f,
-            1.7f
         )
+//        WorldObjectDef(
+//            "chest",
+//            WorldObjectType.CHEST,
+//            1f,
+//            0f,
+//            1.7f
+//        )
+        fun spawnChest() {
+            worldObjects.add(
+                WorldObjectDef(
+                    "chest",
+                    WorldObjectType.CHEST,
+                    1f,
+                    0f,
+                    1.7f
+                )
+            )
+        }
+
     )
 
     private  val _events = MutableSharedFlow<GameEvent>(extraBufferCapacity = 64)
@@ -304,49 +316,13 @@ class GameServer{
     val players: StateFlow<Map<String, PlayerState>> = _players.asStateFlow()
 
 
-    fun start(scope: CoroutineScope) {
+    fun start(scope: kotlinx.coroutines.CoroutineScope){
         scope.launch {
-            commands.collect { cmd ->
+            commands.collect{cmd ->
                 processCommand(cmd)
             }
         }
-        scope.launch {
-            while (true) {
-                delay(1000L)
-
-                updatePlayer("Oleg") { p ->
-                    val mem = p.alchemistMemory
-                    if (mem.isStopped) return@updatePlayer p
-
-                    val newX = mem.posX + (-0.2f..0.2f).random()
-                    val newZ = mem.posZ + (-0.2f..0.2f).random()
-
-                    p.copy(
-                        alchemistMemory = mem.copy(
-                            posX = newX,
-                            posZ = newZ
-                        )
-                    )
-                }
-
-                updatePlayer("Stas") { p ->
-                    val mem = p.alchemistMemory
-                    if (mem.isStopped) return@updatePlayer p
-
-                    val newX = mem.posX + (-0.2f..0.2f).random()
-                    val newZ = mem.posZ + (-0.2f..0.2f).random()
-
-                    p.copy(
-                        alchemistMemory = mem.copy(
-                            posX = newX,
-                            posZ = newZ
-                        )
-                    )
-                }
-            }
-        }
     }
-
     private fun setPlayerState(playerId: String, data: PlayerState){
         val map = _players.value.toMutableMap()
         map[playerId] = data
@@ -394,13 +370,6 @@ class GameServer{
                 }
             updatePlayer(playerId) {p -> p.copy(hintText = newHint)}
             return
-        }
-
-        if (oldAreaId == "alchemist" && newAreaId != "alchemist") {
-            updatePlayer(playerId) { p ->
-                val mem = p.alchemistMemory
-                p.copy(alchemistMemory = mem.copy(isStopped = false))
-            }
         }
 
         if(oldAreaId != null) {
@@ -457,8 +426,7 @@ class GameServer{
                         val oldMemory = player.alchemistMemory
                         val newMemory = oldMemory.copy(
                             hasMet = true,
-                            timesTalked = oldMemory.timesTalked + 1,
-                            isStopped = true
+                            timesTalked = oldMemory.timesTalked + 1
                         )
 
                         if(herb < 3 && newMemory.sawPlayerNearSource){
@@ -498,8 +466,15 @@ class GameServer{
                     }
 
                     WorldObjectType.CHEST -> {
-                        player.copy(gold = player.gold + 1)
+                        updatePlayer(cmd.playerId) { p ->
+                            p.copy(gold = p.gold + 10)
+                        }
+
+                        worldObjects.removeIf { it.id == "chest" }
+
+                        _events.emit(ServerMessage(cmd.playerId, "Ты получил 10 золота а сундук умер((("))
                     }
+
                 }
             }
             is CmdChooseDialogueOption -> {
@@ -551,6 +526,8 @@ class GameServer{
                                 alchemistMemory = newMemory
                             )
                         }
+                        spawnChest()
+                        _events.emit(ServerMessage(cmd.playerId, "Сундук ис апеар"))
 
                         _events.emit(InventoryChanged(cmd.playerId, "herb", newCount))
                         _events.emit(NpcMemoryChanged(cmd.playerId, newMemory))
@@ -719,16 +696,9 @@ fun main() = KoolApplication {
             lastRenderedZ = player.posZ
         }
 
-        alchemistNode.onUpdate {
-            val activeId = hud.activePlayerIdFlow.value
-            val player = server.getPlayerState(activeId)
-            val mem = player.alchemistMemory
-
-            transform.setIdentity()
-            transform.translate(mem.posX, 0f, mem.posZ)
+        alchemistNode.onUpdate{
             transform.rotate(20f.deg * Time.deltaT, Vec3f.Y_AXIS)
         }
-
         herbNode.onUpdate{
             transform.rotate(20f.deg * Time.deltaT, Vec3f.Y_AXIS)
         }
