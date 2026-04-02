@@ -51,7 +51,7 @@ enum class WorldObjectType{
 
 data class GridPos(
     val x: Int,
-    val y: Int
+    val z: Int
 )
 
 
@@ -262,8 +262,8 @@ sealed interface GameEvent{
 
 data class PlayerMoved(
     override val playerId: String,
-    val nextGridX: Int
-    val nextGridY: Int
+    val newGridX: Int,
+    val newGridZ: Int
 ): GameEvent
 
 data class MovedBlocked(
@@ -313,28 +313,12 @@ data class ServerMessage(
     val text: String
 ): GameEvent
 
-data class CutSceneStarted(
-    override val playerId: String,
-    val cutsceneId: String
-): GameEvent
-
-data class CutSceneStep(
-    override val playerId: String,
-    val text: String
-): GameEvent
-
-data class CutSceneFinished(
-    override val playerId: String,
-    val cutsceneId: String
-): GameEvent
-
-
 class GameServer{
     // размер карты, игрок может ходить только в её пределах
 
     private val minX = -5
     private val maxX = 5
-    private val mixZ = -4
+    private val minZ = -4
     private val maxZ = 4
 
     // Подготовка клеток на которые нельзя зайти (занятые)
@@ -342,7 +326,8 @@ class GameServer{
         GridPos(-1, 1),
         GridPos(0, 1),
         GridPos(1, 1),
-        GridPos(1, 0)
+        GridPos(1, 0),
+        GridPos(-2, 0)
     )
     // Имитация маленькой стены для проверки запрета хольбы при упоре в неё
 
@@ -410,16 +395,13 @@ class GameServer{
 
     private fun isCellInsideMap(x: Int, z: Int): Boolean{
         // Находится ли клетка для перемещения в допустимой карте
-        return x in minX .. maxX && z in minZ .. maxZ
-        // x in minX .. maxX - "x входит в диапазон от minX до maxX"
-
+        return x in minX..maxX && z in minZ..maxZ
+        // x in minX..maxX - "x входит в диапазон от minX до maxX"
     }
 
     private fun isCellBlocked(x: Int, z: Int): Boolean{
         // проверка запрещена ли клетка для входа в неё
         return GridPos(x, z) in blockedCells
-
-
     }
 
     // cutsceneJobs[playerId] - текущая катсцена этого игрока
@@ -432,11 +414,12 @@ class GameServer{
         val pz = player.gridZ.toFloat()
 
         val candidates = worldObjects.filter { obj ->
-            distance2d(player.px, player.pz, obj.cellX.toFloat(), obj.cellZ.toFloat()) <= obj.interactRadius
+            distance2d(player.gridX.toFloat(), player.gridZ.toFloat(), obj.x.toFloat(), obj.z.toFloat()) <= obj.interactRadius
         }
 
+
         return candidates.minByOrNull { obj ->  //> minBy = берёт ближайший объект по расстоянию до игрока | OrNull - если нет таких объектов - вернуть null
-            distance2d(player.posX, player.posZ, obj.x, obj.z) <= obj.interactRadius
+            distance2d(player.gridX.toFloat(), player.gridZ.toFloat(), obj.x.toFloat(), obj.z.toFloat())
         }
     }
 
@@ -489,7 +472,8 @@ class GameServer{
             is CmdStepMove -> {
                 val player = getPlayerState(cmd.playerId)
                 val targetX = player.gridX + cmd.stepX
-                val targetZ = player.gridZ + cmd stepZ
+                val targetZ = player.gridZ + cmd.stepZ
+
                 val newFacing =
                     when {
                         cmd.stepX < 0 -> Facing.LEFT
@@ -499,7 +483,7 @@ class GameServer{
                     }
 
                 if (isCellBlocked(targetX, targetZ)) {
-                    _events.emit(ServerMessage(playerId, "Путь заблокирован стеной"))
+                    _events.emit(ServerMessage(cmd.playerId, "Путь заблокирован стеной"))
                     _events.emit(MovedBlocked(cmd.playerId, targetX, targetZ))
 
                     updatePlayer(cmd.playerId){ p ->
@@ -508,45 +492,32 @@ class GameServer{
                     return
                 }
                 updatePlayer(cmd.playerId){ p ->
-                    p.copt(
+                    p.copy(
                         gridX = targetX,
                         gridZ = targetZ,
                         facing = newFacing
+                    )
                 }
             }
+
             is CmdInteract -> {
                 val player = getPlayerState(cmd.playerId)
                 val obj = nearestObject(player)
-                val dist = distance2d(player.posX, player.posZ, obj.x, obj.z)
-                val herb = herbCount(player)
 
                 if (obj == null){
-                    _events.emit(ServerMessage(cmd.playerId, "Рядом нет объектов для взаимодейсвия"))
-                    return
-                }
-                if (dist > obj.interactRadius) {
-                    _events.emit(ServerMessage(cmd.playerId, "чел ты куда ушёл"))
+                    _events.emit(ServerMessage(cmd.playerId, "Рядом нет объектов для взаимодействия"))
                     return
                 }
 
                 when (obj.type){
                     WorldObjectType.ALCHEMIST -> {
-                        val oldMemory = player.alchemistMemory
+                        val  oldMemory = player.alchemistMemory
                         val newMemory = oldMemory.copy(
                             hasMet = true,
                             timesTalked = oldMemory.timesTalked + 1
                         )
 
-                        if(herb < 3 && newMemory.sawPlayerNearSource){
-                            DialogueView(
-                                "Алхимик",
-                                "а я тебя видел на herb source",
-                                emptyList()
-                            )
-                        }
-
-
-                        updatePlayer(cmd.playerId) {p ->
+                        updatePlayer(cmd.playerId) { p ->
                             p.copy(alchemistMemory = newMemory)
                         }
 
@@ -556,7 +527,7 @@ class GameServer{
 
                     WorldObjectType.HERB_SOURCE -> {
                         if (player.questState != QuestState.WAIT_HERB){
-                            _events.emit(ServerMessage(cmd.playerId, "Трава тебе не надо щас, сначала квест"))
+                            _events.emit(ServerMessage(cmd.playerId, "Трава тебе сейчас не нужна - сначала возьми квест"))
                             return
                         }
 
@@ -564,17 +535,16 @@ class GameServer{
                         val newCount = oldCount + 1
                         val newInventory = player.inventory + ("herb" to newCount)
 
-                        updatePlayer(cmd.playerId){ p->
+                        updatePlayer(cmd.playerId) { p ->
                             p.copy(inventory = newInventory)
                         }
 
                         _events.emit(InteractedWithHerbSource(cmd.playerId, obj.id))
                         _events.emit(InventoryChanged(cmd.playerId, "herb", newCount))
-
                     }
-
                 }
             }
+
             is CmdChooseDialogueOption -> {
                 val player = getPlayerState(cmd.playerId)
 
@@ -694,13 +664,14 @@ fun formatMemory(memory: NpcMemory): String{
 fun eventToText(e: GameEvent): String{
     return when(e){
         is PlayerMoved -> "PlayerMoved (${e.newGridX}, ${e.newGridZ})"
-        is EnteredArea -> "EnteredArea: ${e.areaId}"
-        is LeftArea -> "LeftArea: ${e.areaId}"
-        is InteractedWithNpc -> "InteractedWithNpc: ${e.npcId}"
-        is InteractedWithHerbSource -> "InteractedWithHerbSource: ${e.sourceId}"
+        is MovedBlocked -> "MovedBlocked (${e.blockedX}, ${e.blockedZ})"
+        is EnteredArea -> "EnteredArea ${e.areaId}"
+        is LeftArea -> "LeftArea ${e.areaId}"
+        is InteractedWithNpc -> "InteractedWithNpc ${e.npcId}"
+        is InteractedWithHerbSource -> "InteractedWithHerbSource ${e.sourceId}"
         is InventoryChanged -> "InventoryChanged ${e.itemId} -> ${e.newCount}"
         is QuestStateChanged -> "QuestStateChanged ${e.newState}"
-        is NpcMemoryChanged -> "NpcMemoryChanged Встретился:${e.memory.hasMet} | Сколько раз поговорил: ${e.memory.timesTalked} | отдал траву: ${e.memory.receivedHerb}"
+        is NpcMemoryChanged -> "NpcMemoryChanged Встретился = ${e.memory.hasMet}, Сколько раз поговорил = ${e.memory.timesTalked}, Отдал траву = ${e.memory.receivedHerb}"
         is ServerMessage -> "Server: ${e.text}"
     }
 }
@@ -835,7 +806,7 @@ fun main() = KoolApplication{
 
             lastAppliedYaw = targetYaw
         }
-    }    
+    }
     addScene {
         setupUiScene(ClearColorLoad)
 
@@ -870,7 +841,7 @@ fun main() = KoolApplication{
                 val player = hud.playerSnapShot.use()
                 val dialogue = buildAlchemistDialogue(player)
 
-                Text("Игрок: ${hud.activePlayerIdFlow.use()}"){
+                Text("Игрок: ${hud.activePlayerIdUi.use()}"){
                     modifier.margin(bottom = sizes.gap)
                 }
 
@@ -916,22 +887,22 @@ fun main() = KoolApplication{
                 Row{
                     Button("Лево"){
                         modifier.margin(end=8.dp).onClick{
-                            server.trySend(CmdStepMove(player.playerId, stepX= -1f, dz = 0f))
+                            server.trySend(CmdStepMove(player.playerId, stepX= -1, stepZ = 0))
                         }
                     }
                     Button("Право"){
                         modifier.margin(end=8.dp).onClick{
-                            server.trySend(CmdStepMove(player.playerId, stepX= 1f, dz = 0))
+                            server.trySend(CmdStepMove(player.playerId, stepX= 1, stepZ = 0))
                         }
                     }
                     Button("Вперёд"){
                         modifier.margin(end=8.dp).onClick{
-                            server.trySend(CmdStepMove(player.playerId, stepX= 0f, dz = -1f))
+                            server.trySend(CmdStepMove(player.playerId, stepX= 0, stepZ = -1))
                         }
                     }
                     Button("Назад"){
                         modifier.margin(end=8.dp).onClick{
-                            server.trySend(CmdStepMove(player.playerId, stepX= 0f, dz = 1f))
+                            server.trySend(CmdStepMove(player.playerId, stepX= 0, stepZ = 1))
                         }
                     }
                 }
@@ -970,10 +941,16 @@ fun main() = KoolApplication{
                     Text(line){modifier.font(sizes.smallText)}
                 }
 
-                // 1. сделать фиксированную траекторию движения npc
-                // Если с ним взаимодействует игрок - он останавливается
+                //1. добавить в blockedCells новую сетку например GridPos(-2, 0)
+                //> и добавить её же в wallCells в world-сцене
 
-                // extra. При сборе травы - сделать кнопку не подбора а поиска травы где с любым шансом мы найдём от 1 до 3х трав
+                //2. CСделать "быстрый шаг" на 2 клетки, добавить кнопку DashForward
+                //> Она должна попытаться сдвинуть игрока на 2 клетки вперед
+                //> Важно - подумай насколько это хорошо работает с препятсивями и не сломается ли ничего
+
+                //3. Сделать herb-source одноразовым (сейчас herb можно брать бесконечно)
+                //> Сделать так чтобы игрок мог собрать herb из источника только 3 раза после чего source "иссяк"
+                //>> для этого добавить в PlayerState счётчик collectedHerbFromSource если счётчик >= сервер пишет "источник Herb уже пуст
             }
         }
     }
