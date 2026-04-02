@@ -327,7 +327,7 @@ class GameServer{
         GridPos(0, 1),
         GridPos(1, 1),
         GridPos(1, 0),
-        GridPos(-2, 0)
+        GridPos(-2, 0) ////////////////
     )
     // Имитация маленькой стены для проверки запрета хольбы при упоре в неё
 
@@ -481,16 +481,17 @@ class GameServer{
                         cmd.stepZ < 0 -> Facing.FORWARD
                         else -> Facing.BACK
                     }
+                
+                val midX = player.gridX + cmd.stepX.coerceIn(-1, 1)
+                val midZ = player.gridZ + cmd.stepZ.coerceIn(-1, 1)
 
-                if (isCellBlocked(targetX, targetZ)) {
+                if (isCellBlocked(midX, midZ) || isCellBlocked(targetX, targetZ)) {
                     _events.emit(ServerMessage(cmd.playerId, "Путь заблокирован стеной"))
                     _events.emit(MovedBlocked(cmd.playerId, targetX, targetZ))
-
-                    updatePlayer(cmd.playerId){ p ->
-                        p.copy(facing = newFacing)
-                    }
+                    updatePlayer(cmd.playerId){ p -> p.copy(facing = newFacing) }
                     return
                 }
+
                 updatePlayer(cmd.playerId){ p ->
                     p.copy(
                         gridX = targetX,
@@ -703,7 +704,9 @@ fun main() = KoolApplication{
             GridPos(-1, 1),
             GridPos(0, 1),
             GridPos(1, 1),
-            GridPos(1, 0)
+            GridPos(1, 0),
+            GridPos(-2, 0) ///////
+
         )
 
         // Создание стены кубиками
@@ -905,6 +908,11 @@ fun main() = KoolApplication{
                             server.trySend(CmdStepMove(player.playerId, stepX= 0, stepZ = 1))
                         }
                     }
+                    Button("DashForward "){
+                        modifier.margin(end=8.dp).onClick{
+                            server.trySend(CmdStepMove(player.playerId, stepX= 0, stepZ = -2))
+                        }
+                    }
                 }
 
                 Text("Взаимодействия") { modifier.margin(top = sizes.gap) }
@@ -944,11 +952,11 @@ fun main() = KoolApplication{
                 //1. добавить в blockedCells новую сетку например GridPos(-2, 0)
                 //> и добавить её же в wallCells в world-сцене
 
-                //2. CСделать "быстрый шаг" на 2 клетки, добавить кнопку DashForward
+                //2. Cделать "быстрый шаг" на 2 клетки, добавить кнопку DashForward
                 //> Она должна попытаться сдвинуть игрока на 2 клетки вперед
                 //> Важно - подумай насколько это хорошо работает с препятсивями и не сломается ли ничего
 
-                //3. Сделать herb-source одноразовым (сейчас herb можно брать бесконечно)
+                //#. Сделать herb-source одноразовым (сейчас herb можно брать бесконечно)
                 //> Сделать так чтобы игрок мог собрать herb из источника только 3 раза после чего source "иссяк"
                 //>> для этого добавить в PlayerState счётчик collectedHerbFromSource если счётчик >= сервер пишет "источник Herb уже пуст
             }
