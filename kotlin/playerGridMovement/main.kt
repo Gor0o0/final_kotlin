@@ -243,6 +243,11 @@ data class CmdStepMove(
     val stepZ: Int
 ): GameCommand
 
+data class CmdRotatePlayer(
+    override val playerId: String,
+    val dAngle: Float
+): GameCommand
+
 data class CmdInteract(
     override val playerId: String
 ): GameCommand
@@ -500,7 +505,11 @@ class GameServer{
                     )
                 }
             }
-
+            is CmdRotatePlayer -> {
+                updatePlayer(cmd.playerId) { p ->
+                    p.copy(rotationY = p.rotationY + cmd.dAngle)
+                }
+            }
             is CmdInteract -> {
                 val player = getPlayerState(cmd.playerId)
                 val obj = nearestObject(player)
@@ -912,6 +921,11 @@ fun main() = KoolApplication{
                         modifier.margin(end=8.dp).onClick{
                             server.trySend(CmdStepMove(player.playerId, stepX= 0, stepZ = -2))
                         }
+                    }
+                    Button("Поворот"){
+                        modifier.margin(end = 8.dp).onClick {
+                            val p = hud.playerSnapShot.value
+                            server.trySend(CmdRotatePlayer(p.playerId, dAngle = 10f))
                     }
                 }
 
