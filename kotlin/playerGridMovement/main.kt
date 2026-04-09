@@ -79,6 +79,7 @@ data class PlayerState(
     val playerId: String,
     val gridX: Int,
     val gridZ: Int,
+    val rotationY: Float = 0f,
     val questState: QuestState,
     val inventory: Map<String, Int>, // -= примитивный словарь
     val gold: Int,
@@ -128,6 +129,7 @@ fun initialPlayerState(playerId: String): PlayerState {
             "Stas",
             0,
             0,
+            0f,
             QuestState.START,
             emptyMap(),
             0,
@@ -145,6 +147,7 @@ fun initialPlayerState(playerId: String): PlayerState {
             "Oleg",
             0,
             0,
+            0f,
             QuestState.START,
             emptyMap(),
             0,
@@ -686,9 +689,10 @@ fun eventToText(e: GameEvent): String{
     }
 }
 
-fun main() = KoolApplication{
+fun main(): Unit = KoolApplication{
     val hud = HudState()
     val server = GameServer()
+    val spawnedCubes = mutableListOf<Node>()
 
     addScene {
         defaultOrbitCamera()
@@ -742,6 +746,8 @@ fun main() = KoolApplication{
                 roughness(0.25f)
             }
         }
+
+
 
         val alchemistNode = addColorMesh {
             generate {
@@ -897,6 +903,24 @@ fun main() = KoolApplication{
                 Text("Движение в мире:"){modifier.margin(top=sizes.gap)}
 
                 Row{
+                    Button("Добавить куб") {
+                        // высота нового куба = количество уже созданных
+                        val newY = spawnedCubes.size * 1f
+
+                        val cube = addColorMesh {
+                            generate { cube { colored() } }
+                            shader = KslPbrShader {
+                                color { vertexColor() }
+                                metallic(0f)
+                                roughness(0.25f)
+                            }
+                        }
+
+                        cube.transform.translate(0f, newY, 0f)
+
+                        spawnedCubes.add(cube)
+                    }
+
                     Button("Лево"){
                         modifier.margin(end=8.dp).onClick{
                             server.trySend(CmdStepMove(player.playerId, stepX= -1, stepZ = 0))
@@ -963,16 +987,7 @@ fun main() = KoolApplication{
                     Text(line){modifier.font(sizes.smallText)}
                 }
 
-                //1. добавить в blockedCells новую сетку например GridPos(-2, 0)
-                //> и добавить её же в wallCells в world-сцене
-
-                //2. Cделать "быстрый шаг" на 2 клетки, добавить кнопку DashForward
-                //> Она должна попытаться сдвинуть игрока на 2 клетки вперед
-                //> Важно - подумай насколько это хорошо работает с препятсивями и не сломается ли ничего
-
-                //#. Сделать herb-source одноразовым (сейчас herb можно брать бесконечно)
-                //> Сделать так чтобы игрок мог собрать herb из источника только 3 раза после чего source "иссяк"
-                //>> для этого добавить в PlayerState счётчик collectedHerbFromSource если счётчик >= сервер пишет "источник Herb уже пуст
+                }
             }
         }
     }
